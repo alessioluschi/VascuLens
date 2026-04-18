@@ -1,0 +1,206 @@
+# ============================================================
+# GENERAL
+# ============================================================
+general:
+  seed: 42
+  device: "cuda"              # "cuda" or "cpu"
+  num_workers: 4
+  output_dir: "outputs"
+  log_level: "INFO"           # DEBUG, INFO, WARNING, ERROR
+
+# ============================================================
+# HARDWARE — RTX 3080 (10 GB VRAM)
+# ============================================================
+hardware:
+  gpu_name: "RTX 3080"
+  vram_gb: 10
+  mixed_precision: true                 # FP16 via torch.cuda.amp (mandatory)
+  gradient_checkpointing: true          # Enable for UNI ViT-L (mandatory)
+  sequential_backbone_training: true    # Train one backbone at a time (mandatory)
+  embedding_cache_dir: "outputs/embedding_cache"  # Cache embeddings/logits to disk
+  auto_reduce_batch_size: true          # Halve batch size on OOM and retry
+  max_batch_size_retries: 3             # Max OOM retries before aborting
+  empty_cache_between_backbones: true   # torch.cuda.empty_cache() + gc.collect()
+  pin_memory: true                      # DataLoader pin_memory for faster transfers
+  cudnn_benchmark: false                # false for reproducibility; true for speed
+
+# ============================================================
+# DATA
+# ============================================================
+data:
+  root_dir: "data/"           # Root containing class subfolders
+  class_names:
+    - "VASCULAR"
+    - "NON-VASCULAR"
+  image_size: 224
+  # Colour normalization
+  colour_normalization:
+    enabled: true
+    method: "macenko"         # "macenko" or "reinhard"
+    reference_image: null     # Path to reference image; null = compute from dataset
+  # Augmentation (applied on-the-fly during training only)
+  augmentation:
+    horizontal_flip: true
+    vertical_flip: true
+    rotation_degrees: 30
+    random_resized_crop:
+      enabled: true
+      scale_min: 0.8
+      scale_max: 1.0
+    colour_jitter:
+      enabled: true
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.05
+    affine:
+      enabled: true
+      translate: [0.1, 0.1]
+      shear: 10
+
+# ============================================================
+# CROSS-VALIDATION
+# ============================================================
+cross_validation:
+  n_splits: 5
+  stratified: true
+
+# ============================================================
+# BACKBONES
+# ============================================================
+backbones:
+  # Training order determines sequential GPU loading order
+  training_order:
+    - "efficientnet"    # Smallest first — fastest iteration, validates pipeline
+    - "biomedclip"      # Medium
+    - "uni"             # Largest last — most VRAM-intensive
+
+  biomedclip:
+    enabled: true
+    model_name: "microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+    embedding_dim: 512
+    freeze_layers: true         # Freeze all except last N layers
+    unfreeze_last_n_layers: 2
+    learning_rate: 1.0e-5
+    gradient_checkpointing: false  # Not needed — fits comfortably in 10 GB
+
+  uni:
+    enabled: false
+    model_name: "MahmoodLab/uni"
+    embedding_dim: 1024
+    freeze_layers: true
+    unfreeze_last_n_layers: 2
+    learning_rate: 1.0e-5
+    gradient_checkpointing: true   # MANDATORY for RTX 3080 — ViT-L activations are large
+
+  efficientnet:
+    enabled: true
+    model_name: "efficientnet_b0"
+    embedding_dim: 1280
+    pretrained: true
+    # Differential learning rate
+    backbone_lr: 1.0e-5
+    head_lr: 1.0e-3
+    gradient_checkpointing: false  # Not needed — tiny model
+
+# ============================================================
+# CLASSIFICATION HEAD (shared architecture per backbone)
+# ============================================================
+classification_head:
+  hidden_dim: 256
+  dropout: 0.5
+  activation: "relu"          # "relu" or "gelu"
+  num_classes: 2               # VENOUS, NON-VENOUS (use CrossEntropy)
+
+# ============================================================
+# FUSION
+# ============================================================
+fusion:
+  # Primary approach — operates on CACHED LOGITS, no backbones in VRAM
+  late_fusion:
+    enabled: true
+    method: "weighted_average"  # "weighted_average" or "simple_average"
+    learn_weights: true         # Learn combination weights on val set
+  # Ablation — operates on CACHED EMBEDDINGS, no backbones in VRAM
+  feature_fusion:
+    enabled: false               # Run as ablation comparison
+    hidden_dim: 512
+    dropout: 0.5
+    batch_norm: true
+
+# ============================================================
+# TRAINING
+# ============================================================
+training:
+  epochs: 50
+  batch_size: 16                # Will be auto-reduced on OOM if hardware.auto_reduce_batch_size=true
+  accumulation_steps: 1         # Gradient accumulation: effective_batch = batch_size * accumulation_steps
+  optimizer: "adamw"            # "adam" or "adamw"
+  weight_decay: 1.0e-4
+  scheduler:
+    type: "cosine"              # "cosine", "step", or "none"
+    warmup_epochs: 5
+    min_lr: 1.0e-7
+    # For step scheduler
+    step_size: 15
+    gamma: 0.1
+  early_stopping:
+    enabled: true
+    patience: 10
+    monitor: "val_auc"          # Metric to monitor
+    mode: "max"                 # "max" or "min"
+  loss: "cross_entropy"         # "cross_entropy" or "focal"
+  focal_loss_gamma: 2.0         # Only used if loss == "focal"
+  class_weights: "balanced"     # "balanced" (auto-compute), "none", or list [w0, w1]
+
+# ============================================================
+# EVALUATION
+# ============================================================
+evaluation:
+  metrics:
+    - "auc_roc"
+    - "f1"
+    - "accuracy"
+    - "sensitivity"
+    - "specificity"
+  bootstrap_ci:
+    enabled: true
+    n_iterations: 1000
+    confidence_level: 0.95
+  save_confusion_matrix: true
+  save_roc_curve: true
+  save_per_fold_results: true
+
+# ============================================================
+# EXPLAINABILITY
+# ============================================================
+explainability:
+  enabled: true
+  num_samples: 20               # Number of images to generate heatmaps for
+  selection: "random"           # "random", "best", "worst", "all"
+  gradcam:
+    enabled: true
+    method: "gradcam++"         # "gradcam", "gradcam++", "scorecam"
+    target_layer: "auto"        # "auto" = last conv layer; or specify layer name
+    colormap: "jet"
+    alpha: 0.5                  # Overlay transparency
+  attention_rollout:
+    enabled: true
+    head_fusion: "mean"         # "mean", "max", "min"
+    discard_ratio: 0.9          # Discard this fraction of lowest attentions
+    colormap: "jet"
+    alpha: 0.5
+  output_dir: "outputs/heatmaps"
+
+# ============================================================
+# TEST — held-out test set evaluation
+# ============================================================
+test:
+  test_dir: "test/"        # Root with VASCULAR/ and NON-VASCULAR/ subfolders
+  fold: 0                       # Which fold checkpoint to load (0 .. n_splits-1)
+  output_dir: "outputs/test"
+  # Heatmaps
+  num_heatmap_samples: 20       # Max images for heatmap generation (0 = skip)
+  heatmap_selection: "all"      # "all", "random", "worst", "best"
+  colormap: "jet"
+  alpha: 0.5

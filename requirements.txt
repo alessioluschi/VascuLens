@@ -1,0 +1,18 @@
+# NOTE: Do NOT add torch or torchvision here.
+# They are installed separately by setup_env.bat / setup_env.sh
+# with --index-url for CUDA support. Installing via pip without
+# --index-url would pull the CPU-only wheel.
+
+timm>=0.9.0
+open_clip_torch>=2.20.0
+grad-cam>=1.5.0
+scikit-learn>=1.3.0
+matplotlib>=3.7
+seaborn>=0.12
+numpy>=1.24
+Pillow>=9.0
+PyYAML>=6.0
+omegaconf>=2.3
+tqdm>=4.65
+staintools>=2.1.0
+huggingface_hub>=0.20.0
