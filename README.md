@@ -1,4 +1,4 @@
-# Ulcer Classification Pipeline — VASCULAR vs NON-VASCULAR
+# VascuLens - A Multi-Backbone Ensemble Pipeline for Classification of Vascular Ulcer Images with Dual Explainability
 
 Binary classification of clinical ulcer images using an ensemble of three
 pre-trained backbones: **BiomedCLIP**, **UNI**, and **EfficientNet-B0**.
