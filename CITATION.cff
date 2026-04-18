@@ -1,0 +1,72 @@
+cff-version: 1.2.0
+title: >-
+  A Multi-Backbone Ensemble Pipeline for Binary Classification
+  of Vascular Ulcer Images with Dual Explainability
+message: >-
+  If you use this software in your research, please cite it using
+  the metadata from this file and the associated journal article.
+type: software
+authors:
+  - given-names: Alessio
+    family-names: Luschi
+    email: alessio.luschi@unisi.it
+    affiliation: Department of Biomedical Technologies, University of Siena
+    orcid: "https://orcid.org/0000-0002-7615-9187"
+  - given-names: Linda
+    family-names: Tognetti
+    affiliation: Dermatology Unit, Department of Medicine, Surgery and Neuroscience, University of Siena
+  - given-names: Gabriele
+    family-names: Cevenini
+    affiliation: Department of Biomedical Technologies, University of Siena
+  - given-names: Pietro
+    family-names: Rubegni
+    affiliation: Dermatology Unit, Department of Medicine, Surgery and Neuroscience, University of Siena
+  - given-names: Ernesto
+    family-names: Iadanza
+    affiliation: Department of Biomedical Technologies, University of Siena
+repository-code: "https://github.com/alessioluschi/VascuLens"
+url: "https://github.com/alessioluschi/VascuLens"
+license: CC-BY-NC-4.0
+version: 1.0.0
+date-released: "2026-04-18"
+abstract: >-
+  A fully automated, explainable binary classification pipeline
+  that distinguishes vascular from non-vascular cutaneous ulcers
+  using clinical photographs. The architecture combines BiomedCLIP
+  (a biomedical vision-language foundation model, ViT-B/16) and
+  EfficientNet-B0 (CNN) through late fusion, with Macenko colour
+  normalisation and dual explainability (GradCAM++ and attention
+  rollout). Trained on 1,339 images with stratified 5-fold
+  cross-validation, achieving AUC-ROC 0.946 (CV) and 0.894
+  (held-out test set) with 0.895 sensitivity for vascular ulcers.
+preferred-citation:
+  type: article
+  title: >-
+    A Multi-Backbone Ensemble Pipeline for Binary Classification
+    of Vascular Ulcer Images with Dual Explainability
+  authors:
+    - given-names: Alessio
+      family-names: Luschi
+      email: alessio.luschi@unisi.it
+      affiliation: Department of Biomedical Technologies, University of Siena
+      orcid: "https://orcid.org/0000-0002-7615-9187"
+    - given-names: Linda
+      family-names: Tognetti
+      affiliation: Dermatology Unit, Department of Medicine, Surgery and Neuroscience, University of Siena
+    - given-names: Gabriele
+      family-names: Cevenini
+      affiliation: Department of Biomedical Technologies, University of Siena
+    - given-names: Pietro
+      family-names: Rubegni
+      affiliation: Dermatology Unit, Department of Medicine, Surgery and Neuroscience, University of Siena
+    - given-names: Ernesto
+      family-names: Iadanza
+      affiliation: Department of Biomedical Technologies, University of Siena
+  journal: Biomedical Signal Processing and Control
+  year: 2026
+  volume: XX
+  issue: X
+  start: 1
+  end: 15
+  doi: "10.1016/j.bspc.2026.XXXXXX"
+  issn: "1746-8094"
