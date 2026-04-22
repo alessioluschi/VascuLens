@@ -33,12 +33,13 @@ abstract: >-
   A fully automated, explainable binary classification pipeline
   that distinguishes vascular from non-vascular cutaneous ulcers
   using clinical photographs. The architecture combines BiomedCLIP
-  (a biomedical vision-language foundation model, ViT-B/16) and
+  (a biomedical vision-language foundation model, ViT-B/16), UNI 
+  (a computational pathology foundation model, ViT-L/16), and
   EfficientNet-B0 (CNN) through late fusion, with Macenko colour
   normalisation and dual explainability (GradCAM++ and attention
   rollout). Trained on 1,339 images with stratified 5-fold
-  cross-validation, achieving AUC-ROC 0.946 (CV) and 0.894
-  (held-out test set) with 0.895 sensitivity for vascular ulcers.
+  cross-validation, achieving AUC-ROC 0.951 (CV) and 0.941
+  (held-out test set) with 0.852 sensitivity for vascular ulcers.
 preferred-citation:
   type: article
   title: >-
@@ -52,6 +53,9 @@ preferred-citation:
       orcid: "https://orcid.org/0000-0002-7615-9187"
     - given-names: Linda
       family-names: Tognetti
+      affiliation: Dermatology Unit, Department of Medicine, Surgery and Neuroscience, University of Siena
+    - given-names: Bianca
+      family-names: Casali
       affiliation: Dermatology Unit, Department of Medicine, Surgery and Neuroscience, University of Siena
     - given-names: Gabriele
       family-names: Cevenini
