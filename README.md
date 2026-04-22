@@ -1,4 +1,4 @@
-# VascuLens - A Multi-Backbone Ensemble Pipeline for Classification of Vascular Ulcer Images
+# Ulcer Classification Pipeline — VASCULAR vs NON-VASCULAR
 
 Binary classification of clinical ulcer images using an ensemble of three
 pre-trained backbones: **BiomedCLIP**, **UNI**, and **EfficientNet-B0**.
@@ -53,12 +53,22 @@ pre-trained backbones: **BiomedCLIP**, **UNI**, and **EfficientNet-B0**.
 3. Place training images in `data/VASCULAR/` and `data/NON-VASCULAR/`
 4. Run: `source venv/bin/activate && python main.py --config config.yaml --mode all`
 
-### HuggingFace Login (required for UNI model)
-After activating the venv:
-```bash
-python -c "from huggingface_hub import login; login()"
-```
-Accept the UNI model license at https://huggingface.co/MahmoodLab/uni
+### HuggingFace Access Token (required for UNI model)
+
+1. Accept the UNI model license at https://huggingface.co/MahmoodLab/uni
+2. Generate a **read-only** Access Token at https://huggingface.co/settings/tokens
+3. Set the token in `config.yaml`:
+   ```yaml
+   huggingface:
+     token: "hf_xxxxxxxxxxxxxxxxxxxx"
+   ```
+   Or export it as an environment variable (takes precedence over a `null` value in config):
+   ```bash
+   # Windows
+   set HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
+   # Linux / macOS
+   export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
+   ```
 
 ---
 
@@ -167,15 +177,24 @@ All parameters are in `config.yaml`. Key sections:
 ```yaml
 test:
   test_dir: "test_data/"      # Root with VASCULAR/ and NON-VASCULAR/ subfolders
-  fold: 0                     # Checkpoint fold to load (0 .. n_splits-1)
+  fold: 0                     # Default fold checkpoint for ALL backbones (0 .. n_splits-1)
   output_dir: "outputs/test"
   num_heatmap_samples: 20     # Max images for heatmaps (0 = skip heatmaps)
   heatmap_selection: "all"    # all | random | best | worst
   colormap: "jet"
   alpha: 0.5
-  # Optional: explicit fusion weights (must sum to 1, one per enabled backbone)
+  # Optional: load a different fold checkpoint per backbone.
+  # Any backbone not listed falls back to the top-level 'fold'.
+  # fold_per_backbone:
+  #   efficientnet: 2
+  #   biomedclip: 1
+  #   uni: 3
+  # Optional: explicit late-fusion weights (must sum to 1, one per enabled backbone)
   # fusion_weights: [0.4, 0.3, 0.3]
 ```
+
+`fold_per_backbone` lets you pick the best-performing fold checkpoint
+independently for each backbone (e.g. after inspecting per-fold validation AUC).
 
 `heatmap_selection` values:
 
@@ -228,14 +247,13 @@ outputs/test/
 ├── metrics.json                        # All metrics + 95% CI per model
 ├── per_sample_results.csv              # Per-image predictions and confidence
 ├── confusion_matrix_late_fusion.png
-├── confusion_matrix_efficientnet.png
-├── confusion_matrix_biomedclip.png
+├── confusion_matrix_<backbone>.png     # (one per enabled backbone)
 ├── roc_curve_test.png
 └── heatmaps/
     └── <image_stem>/
         ├── original.png
-        ├── efficientnet_gradcam.png        # GradCAM++ panel (orig│heatmap│overlay)
-        ├── biomedclip_attention.png        # Attention Rollout panel
+        ├── <backbone>_gradcam.png          # GradCAM++ panel (orig│heatmap│overlay)
+        ├── <backbone>_attention.png        # Attention Rollout panel (BiomedCLIP / UNI)
         └── late_fusion_aggregated.png      # Pixel-wise avg of the two heatmaps
 ```
 
@@ -247,7 +265,7 @@ outputs/test/
 # Full pipeline: train + evaluate + explain
 python main.py --config config.yaml --mode all
 
-# Training only (5-fold CV + fusion ablation)
+# Training only (5-fold CV)
 python main.py --config config.yaml --mode train
 
 # Evaluate from saved checkpoints (uses cached embeddings)
@@ -264,17 +282,19 @@ python main.py --config config.yaml --mode test
 
 ```
 1. Edit config.yaml:
-     test.test_dir  ← path to your test folder
-     test.fold      ← which checkpoint fold to use (default: 0)
+     test.test_dir           ← path to your test folder
+     test.fold               ← default checkpoint fold for all backbones (default: 0)
+     test.fold_per_backbone  ← (optional) per-backbone fold overrides
 
 2. python main.py --config config.yaml --mode test
 
 3. Results in outputs/test/:
      metrics.json            ← AUC, F1, accuracy, sensitivity, specificity + CI
-     per_sample_results.csv  ← per-image breakdown
-     confusion_matrix_*.png  ← one per backbone + late fusion
+                                (one entry per enabled backbone + late_fusion)
+     per_sample_results.csv  ← per-image predictions and confidence (all backbones)
+     confusion_matrix_*.png  ← one per enabled backbone + late fusion
      roc_curve_test.png
-     heatmaps/<image>/       ← EfficientNet, BiomedCLIP, fused
+     heatmaps/<image>/       ← per-backbone heatmap + fused overlay
 ```
 
 ---
@@ -309,7 +329,7 @@ RuntimeError: No images found in test_dir='test_data/'
 WARNING: Checkpoint not found: outputs/checkpoints/fold_0/efficientnet_best.pt
 ```
 - Run training first (`--mode train`) before running `--mode test`.
-- Or change `test.fold` to a fold that has been trained.
+- Or change `test.fold` (or the relevant entry in `test.fold_per_backbone`) to a fold that has been trained.
 
 ### PowerShell activation error (Windows)
 If `activate.bat` fails in PowerShell:

@@ -127,37 +127,92 @@ def run_evaluate(cfg) -> None:
 
     Loads each backbone's best checkpoint per fold, runs inference on the
     validation split, and reports per-fold and aggregated metrics.
+    Also re-evaluates late fusion from cached logits.
 
     Args:
         cfg: Validated OmegaConf configuration.
     """
+    import numpy as np
+    import torch
+    import torch.nn.functional as F
     from src.training.evaluator import Evaluator
     from src.training.embedding_cache import load_cached_logits, load_cached_labels
-    import torch.nn.functional as F
 
-    evaluator = Evaluator(cfg, str(Path(cfg.general.output_dir) / "metrics"))
+    metrics_dir = str(Path(cfg.general.output_dir) / "metrics")
+    evaluator = Evaluator(cfg, metrics_dir)
 
     enabled_backbones = [
         n for n in cfg.backbones.training_order
         if getattr(cfg.backbones, n).enabled
     ]
 
+    # --- Per-backbone evaluation ---
     for backbone_name in enabled_backbones:
-        fold_metrics = []
+        fold_metrics: List = []
+        fold_roc_data: List = []
         for fold in range(cfg.cross_validation.n_splits):
             try:
                 logits = load_cached_logits(cfg.hardware.embedding_cache_dir, backbone_name, fold)
                 labels = load_cached_labels(cfg.hardware.embedding_cache_dir, fold).numpy()
-                import numpy as np
                 probs = F.softmax(logits.float(), dim=-1).numpy()
                 y_prob = probs[:, 1]
                 fold_met = evaluator.evaluate_fold(labels, y_prob, fold=fold, tag=backbone_name)
                 fold_metrics.append(fold_met)
+                fold_roc_data.append({"y_true": labels, "y_prob": y_prob})
             except FileNotFoundError as exc:
                 logger.warning(f"Skipping fold {fold} for '{backbone_name}': {exc}")
 
         if fold_metrics:
+            evaluator.save_roc_curve(fold_roc_data, tag=backbone_name)
             evaluator.aggregate_and_save(fold_metrics, backbone_name)
+
+    # --- Late fusion evaluation ---
+    if cfg.fusion.late_fusion.enabled:
+        from src.data.dataset import UlcerDataset
+        from src.data.splits import get_cv_splits
+        from src.models.late_fusion import LateFusionEnsemble
+
+        full_dataset = UlcerDataset(
+            root_dir=cfg.data.root_dir,
+            transform=None,
+            class_names=list(cfg.data.class_names),
+        )
+        all_labels = [lbl for _, lbl in full_dataset.samples]
+        splits = get_cv_splits(
+            all_labels,
+            n_splits=cfg.cross_validation.n_splits,
+            seed=cfg.general.seed,
+        )
+
+        fusion_fold_metrics: List = []
+        fusion_fold_roc: List = []
+
+        for fold, (_, _val_idx) in enumerate(splits):
+            try:
+                logits_dict = {
+                    bname: load_cached_logits(cfg.hardware.embedding_cache_dir, bname, fold)
+                    for bname in enabled_backbones
+                }
+                val_labels = load_cached_labels(cfg.hardware.embedding_cache_dir, fold).numpy()
+
+                ensemble = LateFusionEnsemble(
+                    backbone_names=enabled_backbones,
+                    num_classes=cfg.classification_head.num_classes,
+                    learn_weights=False,
+                )
+                with torch.no_grad():
+                    preds = ensemble.predict(logits_dict)
+                y_prob = preds["fused"].numpy()[:, 1]
+
+                fold_met = evaluator.evaluate_fold(val_labels, y_prob, fold=fold, tag="late_fusion")
+                fusion_fold_metrics.append(fold_met)
+                fusion_fold_roc.append({"y_true": val_labels, "y_prob": y_prob})
+            except FileNotFoundError as exc:
+                logger.warning(f"Skipping fold {fold} for late fusion: {exc}")
+
+        if fusion_fold_metrics:
+            evaluator.save_roc_curve(fusion_fold_roc, tag="late_fusion")
+            evaluator.aggregate_and_save(fusion_fold_metrics, "late_fusion")
 
     logger.info("Evaluation complete.")
 

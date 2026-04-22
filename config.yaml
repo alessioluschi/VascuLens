@@ -1,4 +1,12 @@
 # ============================================================
+# HUGGINGFACE — required only if backbones.uni.enabled = true
+# ============================================================
+huggingface:
+  # Paste your HuggingFace Access Token here (read-only is sufficient).
+  # Accept the UNI license at https://huggingface.co/MahmoodLab/uni first.
+  token: null
+
+# ============================================================
 # GENERAL
 # ============================================================
 general:
@@ -85,7 +93,7 @@ backbones:
     gradient_checkpointing: false  # Not needed — fits comfortably in 10 GB
 
   uni:
-    enabled: false
+    enabled: true
     model_name: "MahmoodLab/uni"
     embedding_dim: 1024
     freeze_layers: true
@@ -110,7 +118,7 @@ classification_head:
   hidden_dim: 256
   dropout: 0.5
   activation: "relu"          # "relu" or "gelu"
-  num_classes: 2               # VENOUS, NON-VENOUS (use CrossEntropy)
+  num_classes: 2               # VASCULAR, NON-VASCULAR (use CrossEntropy)
 
 # ============================================================
 # FUSION
@@ -197,10 +205,16 @@ explainability:
 # ============================================================
 test:
   test_dir: "test/"        # Root with VASCULAR/ and NON-VASCULAR/ subfolders
-  fold: 0                       # Which fold checkpoint to load (0 .. n_splits-1)
+  fold: 0                       # Default fold checkpoint for all backbones (0 .. n_splits-1)
+  # Optional: load a different fold checkpoint per backbone.
+  # Omit entirely to use 'fold' for all backbones.
+  fold_per_backbone:
+    efficientnet: 3
+    biomedclip: 3
+    uni: 0
   output_dir: "outputs/test"
   # Heatmaps
   num_heatmap_samples: 20       # Max images for heatmap generation (0 = skip)
-  heatmap_selection: "all"      # "all", "random", "worst", "best"
+  heatmap_selection: "best"      # "all", "random", "worst", "best"
   colormap: "jet"
   alpha: 0.5
