@@ -91,6 +91,7 @@ def run_cross_validation(cfg: DictConfig) -> Dict:
         logger.info(f"{'=' * 60}")
 
         fold_metrics: List[Dict] = []
+        fold_roc_data: List[Dict] = []
 
         for fold, (train_idx, val_idx) in enumerate(splits):
             with gpu_memory_guard(f"backbone={backbone_name} | fold={fold}"):
@@ -157,10 +158,12 @@ def run_cross_validation(cfg: DictConfig) -> Dict:
                     tag=backbone_name,
                 )
                 fold_metrics.append(fold_met)
+                fold_roc_data.append({"y_true": y_true, "y_prob": y_prob})
 
                 # Release backbone from VRAM
                 release_model(model)
 
+        evaluator.save_roc_curve(fold_roc_data, tag=backbone_name)
         aggregated = evaluator.aggregate_and_save(fold_metrics, backbone_name)
         all_results[backbone_name] = aggregated
         logger.info(f"\nBackbone '{backbone_name}' — aggregated results: {aggregated}")

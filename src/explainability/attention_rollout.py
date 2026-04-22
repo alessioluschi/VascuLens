@@ -8,6 +8,11 @@ Fix: hook on the attention module inputs and manually compute Q@K
 attention weights, bypassing the need_weights flag entirely. Works
 for both nn.MultiheadAttention (BiomedCLIP) and timm custom Attention (UNI).
 
+Rollout note: discard_ratio is applied ONCE to the final CLS attention
+vector, not per-layer.  Per-layer discarding compounds across deep ViTs
+(UNI ViT-L = 24 layers) and zeros out the rollout signal, producing
+all-blue maps.  Post-rollout discard keeps top (1-discard_ratio) patches.
+
 Architecture detection order:
   1. model.transformer.resblocks   → open_clip ViT (BiomedCLIP)
   2. model.blocks                  → timm ViT (UNI)
@@ -341,6 +346,13 @@ class AttentionRollout:
     def _rollout(self) -> np.ndarray:
         """Accumulate attention rollout from all layers.
 
+        Discard is applied ONCE to the final CLS attention vector (not
+        per-layer).  Applying discard per-layer compounds across deep ViTs
+        (e.g. UNI ViT-L/24 layers) and drives the rollout toward the
+        identity, producing an all-zero (all-blue) map.  Post-rollout
+        discard keeps the top ``(1 - discard_ratio)`` fraction of patch
+        tokens highlighted without degrading signal through multiplication.
+
         Returns:
             2-D attention map (side × side) normalised to [0, 1], or
             1-D array if patch count is not a perfect square.
@@ -363,12 +375,6 @@ class AttentionRollout:
             else:
                 attn_fused = attn.mean(dim=0)
 
-            # Discard lowest attentions
-            flat = attn_fused.flatten()
-            threshold = torch.quantile(flat, self.discard_ratio)
-            attn_fused = attn_fused.clone()
-            attn_fused[attn_fused < threshold] = 0.0
-
             # Add identity (residual connection) and row-normalise
             attn_fused = attn_fused + torch.eye(n_tokens)
             row_sums = attn_fused.sum(dim=-1, keepdim=True).clamp(min=1e-6)
@@ -378,6 +384,13 @@ class AttentionRollout:
 
         # CLS token row → attentions from CLS to patch tokens (skip CLS itself)
         cls_attn = rollout[0, 1:]   # (N_patches,)
+
+        # Apply discard once on the final CLS vector: zero out the lowest
+        # discard_ratio fraction to sharpen the visualisation.
+        if self.discard_ratio > 0.0:
+            threshold = torch.quantile(cls_attn, self.discard_ratio)
+            cls_attn = cls_attn.clone()
+            cls_attn[cls_attn < threshold] = 0.0
 
         # Reshape to 2-D spatial grid
         n_patches = cls_attn.shape[0]

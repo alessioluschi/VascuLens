@@ -1,6 +1,7 @@
 """Configuration loader and hardware validator for the Ulcer Classification Pipeline."""
 
 import logging
+import os
 from pathlib import Path
 
 import torch
@@ -70,6 +71,9 @@ def load_config(config_path: str) -> DictConfig:
     # --- Validate hardware ---
     _validate_hardware(cfg)
 
+    # --- Validate HuggingFace token (only when UNI is enabled) ---
+    _validate_huggingface(cfg)
+
     # --- Print startup summary ---
     _print_config_summary(cfg)
 
@@ -109,6 +113,28 @@ def _validate_hardware(cfg: DictConfig) -> None:
         OmegaConf.update(cfg, "hardware.mixed_precision", False, merge=True)
 
 
+def _validate_huggingface(cfg: DictConfig) -> None:
+    """Warn early if UNI is enabled but no HuggingFace token is available.
+
+    Checks ``huggingface.token`` in the config and the ``HF_TOKEN``
+    environment variable.  Does not raise — the error will surface later
+    when timm tries to download the gated model.
+
+    Args:
+        cfg: The validated configuration.
+    """
+    if not cfg.backbones.uni.enabled:
+        return
+
+    token = OmegaConf.select(cfg, "huggingface.token") or os.environ.get("HF_TOKEN")
+    if not token:
+        logger.warning(
+            "backbones.uni.enabled=true but no HuggingFace token found. "
+            "Set huggingface.token in config.yaml or the HF_TOKEN environment variable, "
+            "otherwise UNI model loading will fail."
+        )
+
+
 def _print_config_summary(cfg: DictConfig) -> None:
     """Print a human-readable startup summary of the loaded configuration.
 
@@ -145,4 +171,10 @@ def _print_config_summary(cfg: DictConfig) -> None:
     print(f"CV folds:           {cfg.cross_validation.n_splits}")
     print(f"Epochs:             {cfg.training.epochs}")
     print(f"Batch size:         {cfg.training.batch_size}")
+
+    if cfg.backbones.uni.enabled:
+        hf_token = OmegaConf.select(cfg, "huggingface.token") or os.environ.get("HF_TOKEN")
+        token_status = "Configured" if hf_token else "NOT SET — UNI will fail"
+        print(f"HF Token (UNI):     {token_status}")
+
     print("=" * 60 + "\n")

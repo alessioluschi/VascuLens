@@ -4,17 +4,16 @@ Loads one backbone at a time (memory-safe), runs inference on the
 held-out test set, applies late fusion, and saves:
 
   outputs/test/
-  ├── metrics.json
+  ├── metrics.json                          (all enabled backbones + late_fusion)
   ├── per_sample_results.csv
+  ├── confusion_matrix_<backbone>.png       (one per enabled backbone)
   ├── confusion_matrix_late_fusion.png
-  ├── confusion_matrix_efficientnet.png
-  ├── confusion_matrix_biomedclip.png
   ├── roc_curve_test.png
   └── heatmaps/
       └── <image_stem>/
           ├── original.png
-          ├── efficientnet_gradcam.png
-          ├── biomedclip_attention.png
+          ├── <backbone>_gradcam.png        (EfficientNet → GradCAM++)
+          ├── <backbone>_attention.png      (BiomedCLIP / UNI → Attention Rollout)
           └── late_fusion_aggregated.png
 """
 
@@ -42,6 +41,10 @@ from src.utils.metrics import compute_metrics, bootstrap_confidence_interval
 
 logger = logging.getLogger(__name__)
 
+# Explainability method per backbone family
+_GRADCAM_BACKBONES: frozenset = frozenset({"efficientnet"})
+_ATTENTION_BACKBONES: frozenset = frozenset({"biomedclip", "uni"})
+
 
 # ===========================================================================
 # Public entry point
@@ -67,11 +70,9 @@ def run_test(cfg: DictConfig) -> Dict:
     heatmap_dir = out_dir / "heatmaps"
     heatmap_dir.mkdir(parents=True, exist_ok=True)
 
-    fold = int(tcfg.fold)
     device = cfg.general.device
-    ckpt_dir = Path(cfg.general.output_dir) / "checkpoints" / f"fold_{fold}"
 
-    logger.info(f"=== TEST MODE | fold={fold} | test_dir={tcfg.test_dir} ===")
+    logger.info(f"=== TEST MODE | test_dir={tcfg.test_dir} ===")
     log_gpu_memory("TEST START")
 
     # --- Build test dataset ---
@@ -99,10 +100,11 @@ def run_test(cfg: DictConfig) -> Dict:
     backbone_probs:  Dict[str, np.ndarray]   = {}
 
     for bname in enabled:
-        ckpt_path = ckpt_dir / f"{bname}_best.pt"
+        ckpt_path = _resolve_backbone_ckpt(cfg, bname)
         if not ckpt_path.exists():
             logger.warning(f"Checkpoint not found: {ckpt_path} — skipping '{bname}'.")
             continue
+        logger.info(f"Loading {bname} from {ckpt_path}")
 
         logits = _infer_backbone(cfg, bname, str(ckpt_path), all_paths, device)
         backbone_logits[bname] = logits
@@ -159,10 +161,11 @@ def run_test(cfg: DictConfig) -> Dict:
             all_paths, true_labels, y_prob_fused,
             n=n_samples, strategy=tcfg.heatmap_selection,
         )
+        ckpt_paths = {b: _resolve_backbone_ckpt(cfg, b) for b in backbone_probs}
         _generate_test_heatmaps(
             cfg=cfg,
             image_paths=selected,
-            ckpt_dir=str(ckpt_dir),
+            ckpt_paths=ckpt_paths,
             backbone_probs=backbone_probs,
             fused_probs=fused_probs,
             out_dir=heatmap_dir,
@@ -177,6 +180,23 @@ def run_test(cfg: DictConfig) -> Dict:
 # ===========================================================================
 # Inference
 # ===========================================================================
+
+
+def _resolve_backbone_ckpt(cfg: DictConfig, bname: str) -> Path:
+    """Return the checkpoint path for *bname*, honouring per-backbone fold overrides.
+
+    Checks ``test.fold_per_backbone.<bname>`` first; falls back to ``test.fold``.
+
+    Args:
+        cfg: Full configuration.
+        bname: Backbone identifier (e.g. ``"efficientnet"``).
+
+    Returns:
+        Absolute path to ``<bname>_best.pt`` in the resolved fold directory.
+    """
+    fold_overrides = getattr(cfg.test, "fold_per_backbone", None) or {}
+    fold = int(fold_overrides.get(bname, cfg.test.fold))
+    return Path(cfg.general.output_dir) / "checkpoints" / f"fold_{fold}" / f"{bname}_best.pt"
 
 
 def _infer_backbone(
@@ -288,20 +308,21 @@ def _late_fusion(
 def _generate_test_heatmaps(
     cfg: DictConfig,
     image_paths: List[str],
-    ckpt_dir: str,
+    ckpt_paths: Dict[str, Path],
     backbone_probs: Dict[str, np.ndarray],
     fused_probs: np.ndarray,
     out_dir: Path,
 ) -> None:
-    """Generate EfficientNet GradCAM++, BiomedCLIP Attention Rollout,
-    and a fused heatmap for each selected image.
+    """Generate per-backbone explainability heatmaps and a late-fusion aggregate.
 
-    Loads one backbone at a time with gpu_memory_guard.
+    Dispatches GradCAM++ to CNN backbones (EfficientNet) and Attention Rollout
+    to ViT backbones (BiomedCLIP, UNI).  Iterates over all backbones present in
+    ``backbone_probs`` — no hardcoded backbone names.
 
     Args:
         cfg: Full configuration.
         image_paths: Selected test image paths.
-        ckpt_dir: Directory containing fold checkpoints.
+        ckpt_paths: Per-backbone checkpoint paths (already fold-resolved).
         backbone_probs: Per-backbone probabilities (N, C) indexed by backbone name.
         fused_probs: Fused probabilities (N, C).
         out_dir: Directory to write heatmap images.
@@ -312,47 +333,45 @@ def _generate_test_heatmaps(
     ).samples]
     path_to_idx = {p: i for i, p in enumerate(all_image_paths)}
 
-    gradcam_maps:   Dict[str, np.ndarray] = {}
-    attention_maps: Dict[str, np.ndarray] = {}
+    # backbone name → {img_path → heatmap [0,1] array}
+    backbone_maps: Dict[str, Dict[str, np.ndarray]] = {}
 
-    # --- EfficientNet GradCAM++ ---
-    eff_ckpt = Path(ckpt_dir) / "efficientnet_best.pt"
-    if (
-        cfg.backbones.efficientnet.enabled
-        and eff_ckpt.exists()
-        and cfg.explainability.gradcam.enabled
-    ):
-        try:
-            from src.explainability.gradcam import generate_gradcam_heatmaps
-            # Override explainability output (we only need the maps, not saved files)
-            gradcam_maps = generate_gradcam_heatmaps(
-                cfg=cfg,
-                checkpoint_path=str(eff_ckpt),
-                image_paths=image_paths,
-                class_names=list(cfg.data.class_names),
-            )
-        except Exception as exc:
-            logger.warning(f"GradCAM++ generation failed: {exc}")
+    for bname in backbone_probs:
+        ckpt = ckpt_paths.get(bname)
+        if ckpt is None or not ckpt.exists():
+            logger.warning(f"Checkpoint not found for heatmap [{bname}] — skipping.")
+            continue
 
-    # --- BiomedCLIP Attention Rollout ---
-    bio_ckpt = Path(ckpt_dir) / "biomedclip_best.pt"
-    if (
-        cfg.backbones.biomedclip.enabled
-        and bio_ckpt.exists()
-        and cfg.explainability.attention_rollout.enabled
-    ):
-        try:
-            from src.explainability.attention_rollout import generate_attention_rollout_heatmaps
-            attention_maps = generate_attention_rollout_heatmaps(
-                cfg=cfg,
-                backbone_name="biomedclip",
-                checkpoint_path=str(bio_ckpt),
-                image_paths=image_paths,
-            )
-        except Exception as exc:
-            logger.warning(f"Attention Rollout generation failed: {exc}")
+        if bname in _GRADCAM_BACKBONES and cfg.explainability.gradcam.enabled:
+            try:
+                from src.explainability.gradcam import generate_gradcam_heatmaps
+                backbone_maps[bname] = generate_gradcam_heatmaps(
+                    cfg=cfg,
+                    checkpoint_path=str(ckpt),
+                    image_paths=image_paths,
+                    class_names=list(cfg.data.class_names),
+                )
+                logger.info(f"GradCAM++ maps: {bname} ({len(backbone_maps[bname])} images)")
+            except Exception as exc:
+                logger.warning(f"GradCAM++ failed [{bname}]: {exc}")
 
-    # --- Save per-image outputs ---
+        elif bname in _ATTENTION_BACKBONES and cfg.explainability.attention_rollout.enabled:
+            try:
+                from src.explainability.attention_rollout import generate_attention_rollout_heatmaps
+                backbone_maps[bname] = generate_attention_rollout_heatmaps(
+                    cfg=cfg,
+                    backbone_name=bname,
+                    checkpoint_path=str(ckpt),
+                    image_paths=image_paths,
+                )
+                logger.info(f"Attention Rollout maps: {bname} ({len(backbone_maps[bname])} images)")
+            except Exception as exc:
+                logger.warning(f"Attention Rollout failed [{bname}]: {exc}")
+
+    if not backbone_maps:
+        logger.warning("No explainability maps generated (all backbones failed or disabled).")
+        return
+
     colormap = cfg.test.colormap
     alpha = float(cfg.test.alpha)
 
@@ -363,47 +382,49 @@ def _generate_test_heatmaps(
         img_dir.mkdir(parents=True, exist_ok=True)
 
         img_arr = np.array(Image.open(img_path).convert("RGB"), dtype=np.uint8)
-
-        # Save original
         Image.fromarray(img_arr).save(img_dir / "original.png")
 
-        # Per-backbone confidence annotation
-        eff_conf  = backbone_probs["efficientnet"][idx, 1] if "efficientnet" in backbone_probs and idx is not None else None
-        bio_conf  = backbone_probs["biomedclip"][idx, 1]   if "biomedclip"   in backbone_probs and idx is not None else None
-        fused_conf = fused_probs[idx, 1] if idx is not None else None
+        available_maps: List[np.ndarray] = []
 
-        # EfficientNet heatmap
-        if img_path in gradcam_maps:
+        for bname, maps in backbone_maps.items():
+            if img_path not in maps:
+                continue
+
+            # Confidence = P(VASCULAR) = class-0 probability
+            conf_vasc = float(backbone_probs[bname][idx, 0]) if idx is not None else None
+            if conf_vasc is not None:
+                pred_label = "VASCULAR" if conf_vasc >= 0.5 else "NON-VASCULAR"
+                display_conf = conf_vasc if pred_label == "VASCULAR" else 1.0 - conf_vasc
+                title = f"{bname}  class={pred_label} conf={display_conf:.3f}"
+            else:
+                title = bname
+
+            suffix = "gradcam" if bname in _GRADCAM_BACKBONES else "attention"
             _save_heatmap_panel(
-                img_arr, gradcam_maps[img_path],
-                save_path=img_dir / "efficientnet_gradcam.png",
-                title=f"EfficientNet GradCAM++  conf={eff_conf:.3f}" if eff_conf is not None else "EfficientNet GradCAM++",
-                colormap=colormap, alpha=alpha,
+                img_arr, maps[img_path],
+                save_path=img_dir / f"{bname}_{suffix}.png",
+                title=title, colormap=colormap, alpha=alpha,
             )
+            available_maps.append(maps[img_path])
 
-        # BiomedCLIP heatmap
-        if img_path in attention_maps:
+        # Late fusion aggregated heatmap = mean of all available backbone maps
+        if available_maps:
+            fused_conf_vasc = float(fused_probs[idx, 0]) if idx is not None else None
+            if fused_conf_vasc is not None:
+                fused_pred_label = "VASCULAR" if fused_conf_vasc >= 0.5 else "NON-VASCULAR"
+                fused_display_conf = (
+                    fused_conf_vasc if fused_pred_label == "VASCULAR" else 1.0 - fused_conf_vasc
+                )
+                fused_title = (
+                    f"Late Fusion Aggregated  class={fused_pred_label} conf={fused_display_conf:.3f}"
+                )
+            else:
+                fused_title = "Late Fusion Aggregated"
+
             _save_heatmap_panel(
-                img_arr, attention_maps[img_path],
-                save_path=img_dir / "biomedclip_attention.png",
-                title=f"BiomedCLIP Attention Rollout  conf={bio_conf:.3f}" if bio_conf is not None else "BiomedCLIP Attention Rollout",
-                colormap=colormap, alpha=alpha,
-            )
-
-        # Late fusion aggregated heatmap = weighted avg of available maps
-        available: List[np.ndarray] = []
-        if img_path in gradcam_maps:
-            available.append(gradcam_maps[img_path])
-        if img_path in attention_maps:
-            available.append(attention_maps[img_path])
-
-        if available:
-            fused_map = np.mean(available, axis=0)
-            _save_heatmap_panel(
-                img_arr, fused_map,
+                img_arr, np.mean(available_maps, axis=0),
                 save_path=img_dir / "late_fusion_aggregated.png",
-                title=f"Late Fusion Aggregated  conf={fused_conf:.3f}" if fused_conf is not None else "Late Fusion Aggregated",
-                colormap=colormap, alpha=alpha,
+                title=fused_title, colormap=colormap, alpha=alpha,
             )
             logger.debug(f"Heatmaps saved → {img_dir}")
 
@@ -545,8 +566,8 @@ def _save_per_sample_csv(
     with open(fpath, "w", newline="", encoding="utf-8") as fh:
         header = ["image", "true_label"]
         for bname in backbone_probs:
-            header += [f"{bname}_prob_class1", f"{bname}_pred"]
-        header += ["fused_prob_class1", "fused_pred", "correct"]
+            header += [f"{bname}_prob_class0", f"{bname}_prob_class1", f"{bname}_pred"]
+        header += ["fused_prob_class0", "fused_prob_class1", "fused_pred", "correct"]
         writer = csv.DictWriter(fh, fieldnames=header)
         writer.writeheader()
 
@@ -556,9 +577,12 @@ def _save_per_sample_csv(
                 "true_label": class_names[int(true)],
             }
             for bname, probs in backbone_probs.items():
+                p0 = float(probs[i, 0])
                 p1 = float(probs[i, 1])
+                row[f"{bname}_prob_class0"] = f"{p0:.4f}"
                 row[f"{bname}_prob_class1"] = f"{p1:.4f}"
                 row[f"{bname}_pred"] = class_names[int(p1 >= 0.5)]
+            row["fused_prob_class0"] = f"{fused_probs[i, 0]:.4f}"
             row["fused_prob_class1"] = f"{fused_probs[i, 1]:.4f}"
             row["fused_pred"] = class_names[int(fused_pred[i])]
             row["correct"] = "yes" if fused_pred[i] == int(true) else "no"
@@ -638,15 +662,29 @@ def _bootstrap_cis(
     Returns:
         Dictionary of CI tuples keyed by ``<metric>_ci``.
     """
-    from sklearn.metrics import roc_auc_score, f1_score, accuracy_score
+    from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, confusion_matrix as _cm
+
+    def _sensitivity(yt, yp):
+        # VASCULAR (label=0) is positive; tn=TP_vasc, fp=FN_vasc after ravel()
+        c = _cm(yt, (yp >= 0.5).astype(int), labels=[0, 1])
+        tn, fp, fn, tp = c.ravel()
+        return float(tn / (tn + fp)) if (tn + fp) > 0 else float("nan")
+
+    def _specificity(yt, yp):
+        # tp=TN_vasc, fn=FP_vasc after ravel()
+        c = _cm(yt, (yp >= 0.5).astype(int), labels=[0, 1])
+        tn, fp, fn, tp = c.ravel()
+        return float(tp / (tp + fn)) if (tp + fn) > 0 else float("nan")
 
     result: Dict = {}
     bci = cfg.evaluation.bootstrap_ci
     fns = {
-        "auc_roc": lambda yt, yp: roc_auc_score(yt, yp),
-        "f1":      lambda yt, yp: f1_score(yt, (yp >= 0.5).astype(int),
-                                           average="macro", zero_division=0),
-        "accuracy": lambda yt, yp: accuracy_score(yt, (yp >= 0.5).astype(int)),
+        "auc_roc":     lambda yt, yp: roc_auc_score(yt, yp),
+        "f1":          lambda yt, yp: f1_score(yt, (yp >= 0.5).astype(int),
+                                               average="macro", zero_division=0),
+        "accuracy":    lambda yt, yp: accuracy_score(yt, (yp >= 0.5).astype(int)),
+        "sensitivity": _sensitivity,
+        "specificity": _specificity,
     }
     for name, fn in fns.items():
         lo, hi = bootstrap_confidence_interval(

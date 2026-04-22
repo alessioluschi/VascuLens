@@ -105,11 +105,18 @@ class Evaluator:
             aggregated[f"{k}_mean"] = float(np.mean(vals))
             aggregated[f"{k}_std"] = float(np.std(vals))
 
-        # Save JSON
+        # Serialize per-fold metrics: tuples (CI bounds) → lists for JSON
+        per_fold_serializable = [
+            {k: list(v) if isinstance(v, tuple) else v for k, v in m.items()}
+            for m in per_fold_metrics
+        ]
+
+        output = {"aggregated": aggregated, "per_fold": per_fold_serializable}
+
         out_file = self.output_dir / f"{backbone_name}_aggregated.json"
         with open(out_file, "w", encoding="utf-8") as fh:
-            json.dump(aggregated, fh, indent=2)
-        logger.info(f"Aggregated metrics saved → {out_file}")
+            json.dump(output, fh, indent=2)
+        logger.info(f"Metrics saved → {out_file}")
 
         return aggregated
 

@@ -9,16 +9,58 @@ authenticating via ``huggingface-cli login`` before use.
 """
 
 import logging
-from typing import List
+import os
+from typing import List, Optional
 
 import timm
 import torch
 import torch.nn as nn
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from src.models.classification_head import ClassificationHead
 
 logger = logging.getLogger(__name__)
+
+
+def _hf_authenticate(cfg: DictConfig) -> None:
+    """Authenticate with HuggingFace Hub before loading gated models.
+
+    Token resolution order:
+    1. ``huggingface.token`` in config.yaml
+    2. ``HF_TOKEN`` environment variable
+
+    If neither is found, a warning is logged and login is skipped (the
+    model load will fail unless the user is already logged in via the
+    CLI cache).
+
+    Args:
+        cfg: Full OmegaConf configuration.
+    """
+    from huggingface_hub import login as hf_login
+
+    token: Optional[str] = None
+
+    # 1. Config file
+    try:
+        raw = OmegaConf.select(cfg, "huggingface.token")
+        if raw:
+            token = str(raw)
+    except Exception:
+        pass
+
+    # 2. Environment variable
+    if not token:
+        token = os.environ.get("HF_TOKEN") or None
+
+    if token:
+        hf_login(token=token, add_to_git_credential=False)
+        logger.info("HuggingFace Hub: authenticated via token.")
+    else:
+        logger.warning(
+            "No HuggingFace token found. "
+            "Set huggingface.token in config.yaml or the HF_TOKEN environment variable. "
+            "UNI model loading will fail if you have not already logged in via the CLI."
+        )
 
 
 class UNIBackbone(nn.Module):
@@ -41,10 +83,7 @@ class UNIBackbone(nn.Module):
         self.embedding_dim: int = ucfg.embedding_dim
 
         logger.info(f"Loading UNI from hf-hub:{ucfg.model_name} …")
-        logger.info(
-            "NOTE: UNI requires a HuggingFace account and license acceptance at "
-            "https://huggingface.co/MahmoodLab/uni — run 'huggingface-cli login' first."
-        )
+        _hf_authenticate(cfg)
 
         self.backbone: nn.Module = timm.create_model(
             f"hf-hub:{ucfg.model_name}",

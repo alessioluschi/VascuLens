@@ -23,7 +23,8 @@ def compute_metrics(
 
     Args:
         y_true: Ground-truth integer labels of shape (N,).
-        y_prob: Predicted probabilities for class 1 (positive) of shape (N,).
+        y_prob: Predicted probabilities for class 1 (NON-VASCULAR) of shape (N,).
+            VASCULAR (label=0) is the positive class; y_prob = probs[:, 1].
         threshold: Decision threshold for converting probabilities to labels.
 
     Returns:
@@ -42,12 +43,18 @@ def compute_metrics(
     f1 = float(f1_score(y_true, y_pred, average="macro", zero_division=0))
     acc = float(accuracy_score(y_true, y_pred))
 
-    # Sensitivity & specificity via confusion matrix
+    # Sensitivity & specificity via confusion matrix.
+    # VASCULAR (label=0) is the positive class.
+    # cm.ravel() with labels=[0,1] yields [cm[0,0], cm[0,1], cm[1,0], cm[1,1]]
+    # stored in tn, fp, fn, tp (sklearn naming assumes class-1 positive — reversed here).
+    # Mapping:  tn=TP_vasc, fp=FN_vasc, fn=FP_vasc, tp=TN_vasc
+    # sensitivity = VASCULAR recall = TP_vasc / (TP_vasc + FN_vasc) = tn / (tn + fp)
+    # specificity = NON-VASCULAR recall = TN_vasc / (TN_vasc + FP_vasc) = tp / (tp + fn)
     cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
     if cm.shape == (2, 2):
         tn, fp, fn, tp = cm.ravel()
-        sensitivity = float(tp / (tp + fn)) if (tp + fn) > 0 else float("nan")
-        specificity = float(tn / (tn + fp)) if (tn + fp) > 0 else float("nan")
+        sensitivity = float(tn / (tn + fp)) if (tn + fp) > 0 else float("nan")
+        specificity = float(tp / (tp + fn)) if (tp + fn) > 0 else float("nan")
     else:
         sensitivity = float("nan")
         specificity = float("nan")
